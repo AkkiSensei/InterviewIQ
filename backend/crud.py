@@ -21,16 +21,21 @@ def create_user(db: Session, user: dict):
     db.refresh(db_user)
     return db_user
 
-def get_or_create_google_user(db: Session, email: str, name: str, avatar_url: str):
+def get_or_create_google_user(db: Session, email: str, name: str, avatar_url: str, google_id: str):
     user = get_user_by_email(db, email)
     if not user:
         user = models.User(
             email=email,
             name=name,
             avatar_url=avatar_url,
-            password_hash="" # Managed by Google
+            password_hash="!GOOGLE_OAUTH_ACCOUNT!", # Sentinel value to prevent regular login
+            google_id=google_id
         )
         db.add(user)
+        db.commit()
+        db.refresh(user)
+    elif not user.google_id:
+        user.google_id = google_id
         db.commit()
         db.refresh(user)
     return user

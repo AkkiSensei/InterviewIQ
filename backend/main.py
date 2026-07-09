@@ -13,6 +13,10 @@ from typing import List, Optional
 import secrets
 import re
 
+from dotenv import load_dotenv
+
+load_dotenv() # Load .env file
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -77,11 +81,7 @@ app.add_middleware(CSPMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-    ],
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -447,16 +447,27 @@ def register(request: Request, user: UserCreate, db: Session = Depends(get_db)):
 @limiter.limit("5/minute")
 def login(request: Request, user: UserLogin, response: Response, db: Session = Depends(get_db)):
     db_user = crud.get_user_by_email(db, email=user.email)
-    if not db_user or not auth.verify_password(user.password, db_user.password_hash):
+    
+    # Check if the user exists and if their password is valid.
+    # Sentinel values for Google OAuth accounts will fail verify_password.
+    if not db_user or db_user.password_hash == "!GOOGLE_OAUTH_ACCOUNT!":
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+        
+    try:
+        if not auth.verify_password(user.password, db_user.password_hash):
+            raise HTTPException(status_code=400, detail="Incorrect email or password")
+    except ValueError:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
     
     access_token = auth.create_access_token(data={"sub": db_user.email})
+    samesite_policy = "none" if os.getenv("ENV") == "production" else "strict"
+    
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
         secure=True,
-        samesite="strict",
+        samesite=samesite_policy,
         path="/",
         max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60
     )
@@ -467,7 +478,7 @@ def login(request: Request, user: UserLogin, response: Response, db: Session = D
         value=csrf_token,
         httponly=False,
         secure=True,
-        samesite="strict",
+        samesite=samesite_policy,
         path="/"
     )
     return {
@@ -486,26 +497,33 @@ class GoogleAuth(BaseModel):
 GOOGLE_CLIENT_ID = os.getenv("VITE_GOOGLE_CLIENT_ID", "your-client-id.apps.googleusercontent.com")
 
 @app.post("/api/auth/google")
-def google_auth(data: GoogleAuth, response: Response, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def google_auth(request: Request, data: GoogleAuth, response: Response, db: Session = Depends(get_db)):
     try:
         # Verify the token
         idinfo = id_token.verify_oauth2_token(
             data.credential, requests.Request(), GOOGLE_CLIENT_ID, clock_skew_in_seconds=10
         )
         
+        if idinfo["iss"] not in ["accounts.google.com", "https://accounts.google.com"]:
+            raise ValueError("Wrong issuer.")
+            
         email = idinfo['email']
         name = idinfo.get('name', 'Google User')
         picture = idinfo.get('picture', '')
+        google_id = idinfo['sub']
         
-        db_user = crud.get_or_create_google_user(db, email, name, picture)
+        db_user = crud.get_or_create_google_user(db, email, name, picture, google_id)
         
         access_token = auth.create_access_token(data={"sub": db_user.email})
+        samesite_policy = "none" if os.getenv("ENV") == "production" else "strict"
+        
         response.set_cookie(
             key="access_token",
             value=access_token,
             httponly=True,
             secure=True,
-            samesite="strict",
+            samesite=samesite_policy,
             path="/",
             max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
@@ -516,7 +534,7 @@ def google_auth(data: GoogleAuth, response: Response, db: Session = Depends(get_
             value=csrf_token,
             httponly=False,
             secure=True,
-            samesite="strict",
+            samesite=samesite_policy,
             path="/"
         )
         return {
@@ -533,8 +551,9 @@ def google_auth(data: GoogleAuth, response: Response, db: Session = Depends(get_
 
 @app.post("/api/auth/logout")
 def logout(response: Response, _ = Depends(verify_csrf_token)):
-    response.delete_cookie("access_token", path="/", samesite="strict", secure=True, httponly=True)
-    response.delete_cookie("csrf_token", path="/", samesite="strict", secure=True, httponly=False)
+    samesite_policy = "none" if os.getenv("ENV") == "production" else "strict"
+    response.delete_cookie("access_token", path="/", samesite=samesite_policy, secure=True, httponly=True)
+    response.delete_cookie("csrf_token", path="/", samesite=samesite_policy, secure=True, httponly=False)
     return {"status": "logged out"}
 
 @app.get("/api/auth/me")

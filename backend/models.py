@@ -9,6 +9,7 @@ class User(Base):
     name = Column(String)
     email = Column(String, unique=True, index=True)
     password_hash = Column(String)
+    google_id = Column(String, unique=True, index=True, nullable=True)
     avatar_url = Column(String, nullable=True)
     theme = Column(String, default="dark")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
