@@ -11,18 +11,33 @@ export const useInterview = () => {
 };
 
 export const InterviewProvider = ({ children }) => {
-  // Auth state simulation with token check
-  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('iq_token'));
-  const [user, setUser] = useState(() => {
-    if (localStorage.getItem('iq_token')) {
-      return {
-        name: 'Alex Mercer',
-        email: 'alex.mercer@gmail.com',
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=120',
-      };
-    }
-    return null;
-  });
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [user, setUser] = useState(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const apiUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+        const res = await fetch(`${apiUrl}/api/auth/me`, {
+          credentials: 'include'
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setUser(data.user);
+          setIsAuthenticated(true);
+        } else {
+          setIsAuthenticated(false);
+          setUser(null);
+        }
+      } catch (err) {
+        console.error("Auth check failed", err);
+      } finally {
+        setIsAuthLoading(false);
+      }
+    };
+    checkAuth();
+  }, []);
 
   // Theme State
   const [theme, setTheme] = useState(() => {
@@ -149,18 +164,24 @@ export const InterviewProvider = ({ children }) => {
     }
   };
 
-  const loginMock = (email) => {
-    localStorage.setItem('iq_token', 'mock_token');
+  const loginMock = (userData) => {
     setIsAuthenticated(true);
-    setUser({
-      name: 'Alex Mercer',
-      email: email || 'alex.mercer@gmail.com',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=120',
-    });
+    if (userData && typeof userData === 'object' && userData.email) {
+      setUser(userData);
+    } else {
+      setUser({
+        name: 'Alex Mercer',
+        email: typeof userData === 'string' ? userData : 'alex.mercer@gmail.com',
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=120',
+      });
+    }
   };
 
-  const logoutMock = () => {
-    localStorage.removeItem('iq_token');
+  const logoutMock = async () => {
+    try {
+      const apiUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+      await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', credentials: 'include' });
+    } catch(e) {}
     setIsAuthenticated(false);
     setUser(null);
     resetSession();
@@ -218,8 +239,8 @@ export const InterviewProvider = ({ children }) => {
     sessionHistory,
     setSessionHistory,
     resetSession,
-    theme,
     setTheme,
+    isAuthLoading,
   };
 
   return (

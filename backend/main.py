@@ -6,15 +6,62 @@
 # endpoint at a time without touching the front-end.
 # -------------------------------------------------------------------
 
+import os
 import random
 import math
 from typing import List, Optional
+import secrets
+import re
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class LimitUploadSize(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get('content-length')
+        if content_length and int(content_length) > 6_291_456: # 6MB limit
+            return Response(status_code=413, content=b'{"detail":"Payload Too Large"}', media_type="application/json")
+        return await call_next(request)
+
+class CSPMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        csp = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "connect-src 'self' http://localhost:8000 ws://localhost:5173 http://localhost:5173; "
+            "img-src 'self' data:;"
+        )
+        response.headers["Content-Security-Policy"] = csp
+        return response
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
+def get_real_ip(request: Request):
+    if "x-forwarded-for" in request.headers:
+        return request.headers["x-forwarded-for"].split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
+
+limiter = Limiter(key_func=get_real_ip, default_limits=["10/minute"])
+from pydantic import BaseModel, field_validator
+from sqlalchemy.orm import Session
+
+from database import engine, Base, get_db
+import crud
+import auth
+import models
+
+from google.oauth2 import id_token
+from google.auth.transport import requests
 
 # ─── App Setup ────────────────────────────────────────────────────────
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI(
     title="InterviewIQ API",
     version="0.1.0",
@@ -22,6 +69,12 @@ app = FastAPI(
 )
 
 # Allow the Vite dev server (localhost:5173) to call us
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(LimitUploadSize)
+app.add_middleware(CSPMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -335,6 +388,167 @@ async def healthz():
     return {"status": "healthy"}
 
 
+# --- Auth ---
+COMMON_PASSWORDS = {"password", "12345678", "qwerty123", "123456789", "123456", "password123", "111111", "admin123"}
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    name: str
+
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long.")
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain at least one uppercase letter.")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must contain at least one lowercase letter.")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one number.")
+        if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", v):
+            raise ValueError("Password must contain at least one special character.")
+        if v.lower() in COMMON_PASSWORDS:
+            raise ValueError("Password is too common. Please choose a stronger password.")
+        return v
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+def get_current_user(request: Request, db: Session = Depends(get_db)):
+    token = request.cookies.get("access_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    email = auth.verify_token(token)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = crud.get_user_by_email(db, email=email)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+def verify_csrf_token(request: Request):
+    csrf_cookie = request.cookies.get("csrf_token")
+    csrf_header = request.headers.get("x-csrf-token")
+    if not csrf_cookie or not csrf_header or not secrets.compare_digest(csrf_cookie, csrf_header):
+        raise HTTPException(status_code=403, detail="CSRF token validation failed")
+
+@app.post("/api/auth/register")
+@limiter.limit("5/minute")
+def register(request: Request, user: UserCreate, db: Session = Depends(get_db)):
+    db_user = crud.get_user_by_email(db, email=user.email)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    return crud.create_user(db=db, user=user.model_dump())
+
+@app.post("/api/auth/login")
+@limiter.limit("5/minute")
+def login(request: Request, user: UserLogin, response: Response, db: Session = Depends(get_db)):
+    db_user = crud.get_user_by_email(db, email=user.email)
+    if not db_user or not auth.verify_password(user.password, db_user.password_hash):
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+    
+    access_token = auth.create_access_token(data={"sub": db_user.email})
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        path="/",
+        max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
+    
+    csrf_token = secrets.token_urlsafe(32)
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf_token,
+        httponly=False,
+        secure=True,
+        samesite="strict",
+        path="/"
+    )
+    return {
+        "user": {
+            "id": db_user.id, 
+            "email": db_user.email, 
+            "name": db_user.name, 
+            "avatar_url": db_user.avatar_url
+        }
+    }
+
+# --- Google OAuth ---
+class GoogleAuth(BaseModel):
+    credential: str
+
+GOOGLE_CLIENT_ID = os.getenv("VITE_GOOGLE_CLIENT_ID", "your-client-id.apps.googleusercontent.com")
+
+@app.post("/api/auth/google")
+def google_auth(data: GoogleAuth, response: Response, db: Session = Depends(get_db)):
+    try:
+        # Verify the token
+        idinfo = id_token.verify_oauth2_token(
+            data.credential, requests.Request(), GOOGLE_CLIENT_ID, clock_skew_in_seconds=10
+        )
+        
+        email = idinfo['email']
+        name = idinfo.get('name', 'Google User')
+        picture = idinfo.get('picture', '')
+        
+        db_user = crud.get_or_create_google_user(db, email, name, picture)
+        
+        access_token = auth.create_access_token(data={"sub": db_user.email})
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            secure=True,
+            samesite="strict",
+            path="/",
+            max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        )
+        
+        csrf_token = secrets.token_urlsafe(32)
+        response.set_cookie(
+            key="csrf_token",
+            value=csrf_token,
+            httponly=False,
+            secure=True,
+            samesite="strict",
+            path="/"
+        )
+        return {
+            "user": {
+                "id": db_user.id,
+                "email": db_user.email,
+                "name": db_user.name,
+                "avatar_url": db_user.avatar_url
+            }
+        }
+    except ValueError as e:
+        print(f"Google Token Verification Error: {e}")
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+@app.post("/api/auth/logout")
+def logout(response: Response, _ = Depends(verify_csrf_token)):
+    response.delete_cookie("access_token", path="/", samesite="strict", secure=True, httponly=True)
+    response.delete_cookie("csrf_token", path="/", samesite="strict", secure=True, httponly=False)
+    return {"status": "logged out"}
+
+@app.get("/api/auth/me")
+def get_me(current_user: models.User = Depends(get_current_user)):
+    return {
+        "user": {
+            "id": current_user.id,
+            "email": current_user.email,
+            "name": current_user.name,
+            "avatar_url": current_user.avatar_url
+        }
+    }
+
+
 # --- Personas ---
 @app.get("/api/personas")
 async def get_personas():
@@ -375,16 +589,38 @@ async def get_questions(
 
 # --- Resume Upload ---
 @app.post("/api/resume")
+@limiter.limit("3/minute")
 async def upload_resume(
+    request: Request,
     file: UploadFile = File(...),
     jobTitle: str = Form("Software Engineer"),
     jobDescription: str = Form(""),
+    _ = Depends(verify_csrf_token)
 ):
     """
     Accept a resume file and return a mock analysis report.
-    In production, replace the body with real PDF parsing (pdfminer,
-    docx2txt) and NLP-based skill extraction (spaCy, sentence-transformers).
     """
+    MAX_FILE_SIZE = 5 * 1024 * 1024
+    real_file_size = 0
+    
+    # Read the first chunk to verify magic bytes (PDFs start with %PDF-)
+    chunk = await file.read(1024)
+    if not chunk.startswith(b'%PDF-'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only PDFs are allowed.")
+    real_file_size += len(chunk)
+    
+    # Continue reading in chunks to ensure we don't exceed 5MB
+    while True:
+        chunk = await file.read(1024 * 1024) # read 1MB at a time
+        if not chunk:
+            break
+        real_file_size += len(chunk)
+        if real_file_size > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail="File too large. Maximum size is 5MB.")
+            
+    # Reset file cursor for any subsequent processing
+    await file.seek(0)
+
     common_keywords = ["React", "TypeScript", "JavaScript", "Tailwind", "Git", "REST API", "Vite", "State Management"]
     missing_keywords = ["Next.js", "GraphQL", "Docker", "CI/CD", "Jest/Cypress", "System Design"]
 
@@ -418,7 +654,8 @@ async def upload_resume(
 
 # --- Grading ---
 @app.post("/api/grade")
-async def grade(req: GradeRequest):
+@limiter.limit("3/minute")
+async def grade(request: Request, req: GradeRequest, _ = Depends(verify_csrf_token)):
     """
     Grade an interview session and return a detailed feedback report.
     In production, call Claude / OpenAI server-side here with your
