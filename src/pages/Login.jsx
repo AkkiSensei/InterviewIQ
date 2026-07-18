@@ -53,6 +53,7 @@ export default function Login() {
       }
     } catch (error) {
       console.error("Auth error:", error);
+      alert(`Network error: Could not connect to the server. Please check your connection or CORS settings. Details: ${error.message}`);
     } finally {
       setSubmitting(false);
     }
@@ -78,6 +79,7 @@ export default function Login() {
       }
     } catch (error) {
       console.error("Auth error:", error);
+      alert(`Network error during Google Sign-In: Could not connect to the server. Please check your connection or CORS settings. Details: ${error.message}`);
     } finally {
       setGoogleLoggingIn(false);
     }
