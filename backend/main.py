@@ -31,13 +31,14 @@ class LimitUploadSize(BaseHTTPMiddleware):
 class CSPMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
+        allowed = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
         csp = (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src 'self' https://fonts.gstatic.com; "
-            "connect-src 'self' http://localhost:8000 ws://localhost:5173 http://localhost:5173; "
-            "img-src 'self' data:;"
+            f"connect-src 'self' {allowed} http://localhost:8000 ws://localhost:5173 http://localhost:5173; "
+            "img-src 'self' data: https://lh3.googleusercontent.com https://images.unsplash.com;"
         )
         response.headers["Content-Security-Policy"] = csp
         return response
@@ -79,12 +80,17 @@ app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(LimitUploadSize)
 app.add_middleware(CSPMiddleware)
 
+allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")]
+print(f"[CORS] Allowed origins: {allowed_origins}")
+print(f"[ENV] ENV={os.getenv('ENV')}, ALLOWED_ORIGINS={os.getenv('ALLOWED_ORIGINS')}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","),
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
