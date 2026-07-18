@@ -15,7 +15,7 @@ export default function Footer() {
 
         <div className="flex items-center gap-4 text-gray-400">
           <a href="#" className="hover:text-white transition duration-200"><FaTwitter size={18} /></a>
-          <a href="#" className="hover:text-white transition duration-200"><FaGithub size={18} /></a>
+          <a href="https://github.com/AkkiSensei/InterviewIQ" target="_blank" rel="noopener noreferrer" className="hover:text-white transition duration-200"><FaGithub size={18} /></a>
           <a href="#" className="hover:text-white transition duration-200"><FaLinkedin size={18} /></a>
         </div>
       </div>

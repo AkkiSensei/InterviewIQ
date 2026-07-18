@@ -95,13 +95,12 @@ export default function AppLayout({ children }) {
         </nav>
 
         {/* Version & GitHub Info */}
-        <div className="px-6 py-3.5 border-t border-white/5 flex items-center justify-between text-[11px] text-gray-500 font-mono">
-          <span>v1.0.0</span>
+        <div className="mt-auto px-6 py-6 pb-2">
           <a 
-            href="https://github.com" 
+            href="https://github.com/AkkiSensei/InterviewIQ" 
             target="_blank" 
             rel="noopener noreferrer" 
-            className="hover:text-white transition duration-200 flex items-center gap-1.5"
+            className="hover:text-white transition duration-200 flex items-center gap-1.5 text-[11px] text-gray-500 font-mono"
           >
             <FaGithub />
             <span>GitHub</span>
@@ -184,13 +183,12 @@ export default function AppLayout({ children }) {
               </nav>
 
               {/* Version & GitHub Info (Mobile) */}
-              <div className="px-6 py-3 border-t border-white/5 flex items-center justify-between text-[11px] text-gray-500 font-mono bg-[#0f1522]/30">
-                <span>v1.0.0</span>
+              <div className="mt-auto px-6 py-4 pb-20 border-t border-white/5">
                 <a 
-                  href="https://github.com" 
+                  href="https://github.com/AkkiSensei/InterviewIQ" 
                   target="_blank" 
                   rel="noopener noreferrer" 
-                  className="hover:text-white transition duration-200 flex items-center gap-1.5"
+                  className="hover:text-white transition duration-200 flex items-center gap-1.5 text-[#94A3B8]"
                 >
                   <FaGithub />
                   <span>GitHub</span>
