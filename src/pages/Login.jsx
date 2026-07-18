@@ -45,7 +45,7 @@ export default function Login() {
       if (res.ok) {
         const data = await res.json();
         // Fallback to loginMock for context update
-        loginMock(data.user || email);
+        loginMock(data.user);
         navigate(from, { replace: true });
       } else {
         const errorData = await res.json();
@@ -72,7 +72,7 @@ export default function Login() {
       if (res.ok) {
         const data = await res.json();
         // Fallback to loginMock for now until context is updated, but pass real data
-        loginMock(data.user.email); 
+        loginMock(data.user); 
         navigate(from, { replace: true });
       } else {
         alert("Google authentication failed. Please try again.");
