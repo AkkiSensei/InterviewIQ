@@ -500,7 +500,7 @@ def login(request: Request, user: UserLogin, response: Response, db: Session = D
 class GoogleAuth(BaseModel):
     credential: str
 
-GOOGLE_CLIENT_ID = os.getenv("VITE_GOOGLE_CLIENT_ID", "your-client-id.apps.googleusercontent.com")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", os.getenv("VITE_GOOGLE_CLIENT_ID", "your-client-id.apps.googleusercontent.com"))
 
 @app.post("/api/auth/google")
 @limiter.limit("5/minute")
